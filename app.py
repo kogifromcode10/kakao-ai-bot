@@ -1,28 +1,40 @@
 
 from flask import Flask, request, jsonify
-import sqlite3
-import os
+from dotenv import load_dotenv
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import os
+import turso_serverless
+
+load_dotenv()
 
 app = Flask(__name__)
 
-# 데이터베이스 경로
-DB_PATH = os.environ.get("DB_PATH", "bot.db")
-
-
-# -----------------------------
-# 데이터베이스 초기화
-# -----------------------------
+# --------------------------------
+# Turso 연결
+# --------------------------------
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    url = os.getenv("TURSO_DATABASE_URL")
+    token = os.getenv("TURSO_AUTH_TOKEN")
 
+    if not url or not token:
+        raise RuntimeError("Turso 환경변수가 설정되지 않았습니다.")
+
+    return turso_serverless.connect(
+        url,
+        auth_token=token
+    )
+
+
+# --------------------------------
+# 데이터베이스 초기화
+# --------------------------------
 
 def init_db():
-    with get_db() as conn:
+    conn = get_db()
+
+    try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS memos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,13 +49,29 @@ def init_db():
             ON memos(user_id)
         """)
 
+        conn.commit()
 
+    finally:
+        conn.close()
+
+
+# 서버 시작 시 테이블 확인
 init_db()
 
 
-# -----------------------------
+# --------------------------------
+# 시간
+# --------------------------------
+
+def current_time():
+    return datetime.now(
+        ZoneInfo("Asia/Seoul")
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# --------------------------------
 # 카카오톡 응답
-# -----------------------------
+# --------------------------------
 
 def kakao_response(message):
     return jsonify({
@@ -60,81 +88,132 @@ def kakao_response(message):
     })
 
 
-# -----------------------------
+# --------------------------------
 # 메모 저장
-# -----------------------------
+# --------------------------------
 
 def save_memo(user_id, content):
-    now = datetime.now(
-        ZoneInfo("Asia/Seoul")
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
 
-    with get_db() as conn:
+    try:
         conn.execute("""
             INSERT INTO memos
             (user_id, content, created_at)
             VALUES (?, ?, ?)
-        """, (user_id, content, now))
+        """, (user_id, content, current_time()))
+
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
-# -----------------------------
+# --------------------------------
 # 메모 목록
-# -----------------------------
+# --------------------------------
 
 def get_memos(user_id):
-    with get_db() as conn:
-        return conn.execute("""
+    conn = get_db()
+
+    try:
+        cursor = conn.execute("""
             SELECT id, content, created_at
             FROM memos
             WHERE user_id = ?
             ORDER BY id DESC
             LIMIT 20
-        """, (user_id,)).fetchall()
+        """, (user_id,))
+
+        return cursor.fetchall()
+
+    finally:
+        conn.close()
 
 
-# -----------------------------
+# --------------------------------
 # 메모 검색
-# -----------------------------
+# --------------------------------
 
 def search_memos(user_id, keyword):
-    with get_db() as conn:
-        return conn.execute("""
+    conn = get_db()
+
+    try:
+        cursor = conn.execute("""
             SELECT id, content, created_at
             FROM memos
             WHERE user_id = ?
             AND content LIKE ?
             ORDER BY id DESC
             LIMIT 20
-        """, (user_id, f"%{keyword}%")).fetchall()
+        """, (user_id, f"%{keyword}%"))
+
+        return cursor.fetchall()
+
+    finally:
+        conn.close()
 
 
-# -----------------------------
-# 메모 삭제
-# -----------------------------
+# --------------------------------
+# 개별 메모 삭제
+# --------------------------------
 
 def delete_memo(user_id, memo_id):
-    with get_db() as conn:
+    conn = get_db()
+
+    try:
         cursor = conn.execute("""
+            SELECT id FROM memos
+            WHERE id = ? AND user_id = ?
+        """, (memo_id, user_id))
+
+        exists = cursor.fetchone()
+
+        if not exists:
+            return False
+
+        conn.execute("""
             DELETE FROM memos
             WHERE id = ? AND user_id = ?
         """, (memo_id, user_id))
 
-        return cursor.rowcount > 0
+        conn.commit()
+        return True
 
+    finally:
+        conn.close()
+
+
+# --------------------------------
+# 전체 메모 삭제
+# --------------------------------
 
 def delete_all_memos(user_id):
-    with get_db() as conn:
+    conn = get_db()
+
+    try:
         cursor = conn.execute("""
+            SELECT COUNT(*)
+            FROM memos
+            WHERE user_id = ?
+        """, (user_id,))
+
+        count = cursor.fetchone()[0]
+
+        conn.execute("""
             DELETE FROM memos
             WHERE user_id = ?
         """, (user_id,))
 
-        return cursor.rowcount
+        conn.commit()
+        return count
+
+    finally:
+        conn.close()
 
 
-# -----------------------------
+# --------------------------------
 # 명령어 처리
-# -----------------------------
+# --------------------------------
 
 def process_command(user_id, message):
 
@@ -143,8 +222,9 @@ def process_command(user_id, message):
     if not message:
         return "메시지를 입력해 줘."
 
-    # 저장
+    # 메모 저장
     if message.startswith("저장 "):
+
         content = message[3:].strip()
 
         if not content:
@@ -154,10 +234,15 @@ def process_command(user_id, message):
             return "저장할 내용은 500자 이하로 입력해 줘."
 
         save_memo(user_id, content)
-        return f"저장 완료!\n\n{content}"
 
-    # 목록
+        return (
+            "저장 완료!\n\n"
+            + content
+        )
+
+    # 메모 목록
     elif message == "목록":
+
         memos = get_memos(user_id)
 
         if not memos:
@@ -167,15 +252,16 @@ def process_command(user_id, message):
 
         for memo in memos:
             result.append(
-                f"\n번호: {memo['id']}\n"
-                f"내용: {memo['content']}\n"
-                f"시간: {memo['created_at']}"
+                f"\n번호: {memo[0]}\n"
+                f"내용: {memo[1]}\n"
+                f"시간: {memo[2]}"
             )
 
         return "\n".join(result)
 
-    # 검색
+    # 메모 검색
     elif message.startswith("검색 "):
+
         keyword = message[3:].strip()
 
         if not keyword:
@@ -190,16 +276,22 @@ def process_command(user_id, message):
 
         for memo in memos:
             result.append(
-                f"\n번호: {memo['id']}\n"
-                f"내용: {memo['content']}"
+                f"\n번호: {memo[0]}\n"
+                f"내용: {memo[1]}\n"
+                f"시간: {memo[2]}"
             )
 
         return "\n".join(result)
 
-    # 개별 삭제
+    # 메모 삭제
     elif message.startswith("삭제 "):
+
         try:
             memo_id = int(message[3:].strip())
+
+            if memo_id <= 0:
+                return "올바른 번호를 입력해 줘."
+
         except ValueError:
             return "사용법: 삭제 번호"
 
@@ -208,53 +300,79 @@ def process_command(user_id, message):
 
         return "해당 번호의 메모를 찾을 수 없어."
 
-    # 전체 삭제 확인
+    # 전체 삭제 요청
     elif message == "전체삭제":
+
         return (
-            "정말 모든 메모를 삭제할까\n"
+            "정말 모든 메모를 삭제할까?\n"
             "삭제하려면 '전체삭제 확인'을 입력해 줘."
         )
 
+    # 전체 삭제 확인
     elif message == "전체삭제 확인":
+
         count = delete_all_memos(user_id)
+
         return f"삭제 완료! 총 {count}개의 메모를 삭제했어."
 
     # 도움말
     elif message == "도움말":
+
         return (
-            " 명령어\n\n"
+            " 챗봇 명령어\n\n"
             "저장 내용 - 메모 저장\n"
-            "목록 - 저장한 메모 확인\n"
+            "목록 - 메모 확인\n"
             "검색 내용 - 메모 검색\n"
             "삭제 번호 - 메모 삭제\n"
             "전체삭제 - 전체 삭제 요청\n"
-            "전체삭제 확인- 전체 삭제 실행\n"
-            "도움말 - 명령어 확인"
+            "전체삭제 확인 - 전체 삭제 실행\n"
+            "도움말 - 명령어 안내"
         )
 
-    # 기본 응답
-    else:
-        return (
-            "아직 지원하지 않는 명령어야.\n"
-            "'도움말'을 입력해 봐."
-        )
+    return (
+        "지원하지 않는 명령어야.\n"
+        "'도움말'을 입력해 봐."
+    )
 
 
-# -----------------------------
+# --------------------------------
 # Flask 라우트
-# -----------------------------
+# --------------------------------
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Kakao AI Bot Server is running!"
+    return "Kakao Bot Server is running!"
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "ok",
-        "database": "connected"
-    })
+
+    try:
+        conn = get_db()
+
+        try:
+            cursor = conn.execute("SELECT 1")
+            result = cursor.fetchone()
+
+        finally:
+            conn.close()
+
+        if not result or result[0] != 1:
+            raise RuntimeError("Database test failed")
+
+        return jsonify({
+            "status": "ok",
+            "database": "connected",
+            "provider": "Turso"
+        })
+
+    except Exception as e:
+        print("[DB HEALTH ERROR]", str(e))
+
+        return jsonify({
+            "status": "error",
+            "database": "disconnected"
+        }), 503
 
 
 @app.route("/skill", methods=["POST"])
@@ -263,23 +381,30 @@ def skill():
     data = request.get_json(silent=True) or {}
 
     user_request = data.get("userRequest", {})
-    message = user_request.get("utterance", "").strip()
+    message = user_request.get("utterance", "")
 
     user = user_request.get("user", {})
     user_id = user.get("id")
 
     if not user_id:
         return kakao_response(
-            "사용자 정보를 확인할 수 없어. 다시 시도해 줘."
+            "사용자 정보를 확인할 수 없어."
         )
 
-    print(f"메시지 사용자: {user_id}, 내용: {message}")
+    print(
+        f"[MESSAGE] user={user_id}, message={message}"
+    )
 
     try:
         answer = process_command(user_id, message)
+
     except Exception as e:
-        print("오류", str(e))
-        answer = "처리 중 오류가 발생했어. 잠시 후 다시 시도해 줘."
+        print("[ERROR]", str(e))
+
+        answer = (
+            "처리 중 오류가 발생했어. "
+            "잠시 후 다시 시도해 줘."
+        )
 
     return kakao_response(answer)
 

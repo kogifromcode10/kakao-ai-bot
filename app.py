@@ -163,7 +163,7 @@ def process_command(user_id, message):
         if not memos:
             return "저장된 내용이 없어."
 
-        result = ["[내 저장 목록]"]
+        result = ["내 저장 목록"]
 
         for memo in memos:
             result.append(
@@ -186,7 +186,7 @@ def process_command(user_id, message):
         if not memos:
             return "검색 결과가 없어."
 
-        result = ["[검색 결과]"]
+        result = ["검색 결과"]
 
         for memo in memos:
             result.append(
@@ -211,7 +211,7 @@ def process_command(user_id, message):
     # 전체 삭제 확인
     elif message == "전체삭제":
         return (
-            "정말 모든 메모를 삭제할까?\n"
+            "정말 모든 메모를 삭제할까\n"
             "삭제하려면 '전체삭제 확인'을 입력해 줘."
         )
 
@@ -222,13 +222,13 @@ def process_command(user_id, message):
     # 도움말
     elif message == "도움말":
         return (
-            "[챗봇 명령어]\n\n"
+            " 명령어\n\n"
             "저장 내용 - 메모 저장\n"
             "목록 - 저장한 메모 확인\n"
             "검색 내용 - 메모 검색\n"
             "삭제 번호 - 메모 삭제\n"
             "전체삭제 - 전체 삭제 요청\n"
-            "전체삭제 확인 - 전체 삭제 실행\n"
+            "전체삭제 확인- 전체 삭제 실행\n"
             "도움말 - 명령어 확인"
         )
 
@@ -273,12 +273,12 @@ def skill():
             "사용자 정보를 확인할 수 없어. 다시 시도해 줘."
         )
 
-    print(f"[메시지] 사용자: {user_id}, 내용: {message}")
+    print(f"메시지 사용자: {user_id}, 내용: {message}")
 
     try:
         answer = process_command(user_id, message)
     except Exception as e:
-        print("[오류]", str(e))
+        print("오류", str(e))
         answer = "처리 중 오류가 발생했어. 잠시 후 다시 시도해 줘."
 
     return kakao_response(answer)
